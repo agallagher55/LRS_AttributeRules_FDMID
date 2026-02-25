@@ -126,6 +126,7 @@ if (sisterLength > myLength) {
 
 // 3. Tiebreaker: lower OBJECTID keeps original FDMID
 //    Both records evaluate this identically → guaranteed consistent outcome.
-return (myOID <= sisterOID)
-    ? myFDMID
-    : NextSequenceValue("sdeadm.FDMID_LRS");
+if (myOID <= sisterOID) {
+    return myFDMID;
+}
+return NextSequenceValue("sdeadm.FDMID_LRS");

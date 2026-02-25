@@ -127,6 +127,7 @@ For full test coverage with recorded pass/fail results, use **`FDMID_Rule_Tester
 
 ## Known Considerations
 
+- **No ternary operators in Arcade:** Arcade does not support the ternary (`? :`) operator. All conditional expressions must use `if / return` statements.
 - **Buffer overlap at split point:** A civic address point near the split location may fall inside both segments' 50 m buffers and be counted for both. This does not affect correctness — the comparison still identifies the denser side.
 - **FDMID is always overwritten on INSERT:** There is no way to manually set an FDMID and have it persist. The rule always assigns the sequence value. Operators should not attempt to pre-populate this field.
 - **Performance:** The spatial buffer + intersect query against `LND_civic_address` runs on every INSERT. In areas with a very large number of civic address points this may add a brief delay on save. Report any slowness via the tester feedback guide.
