@@ -21,9 +21,10 @@
 //       → Assign NextSequenceValue("sdeadm.FDMID_LRS")
 //
 //   (B) LRS event split — "keeper" segment
-//       When an event is split the LRS engine retires the original record
-//       (sets TODATE) and INSERTs two new active records, each inheriting
-//       the parent's FDMID.  One record should keep the original FDMID
+//       When an event is split, the LRS engine shortens the original record
+//       (preserving all its attributes, including FDMID) and INSERTs a new
+//       record with the same attributes.  The INSERT rule fires on both
+//       resulting records.  One record should keep the original FDMID
 //       (continuity of identity); the other receives a new value.
 //
 //       Keeper determination (in priority order):
@@ -37,7 +38,7 @@
 //
 //       → Return inherited FDMID unchanged.
 //
-//   (C) LRS event split — "new" segment  (non-keeper)
+//   (C) LRS event split — "non-keeper" segment
 //       → Assign NextSequenceValue("sdeadm.FDMID_LRS")
 //
 // =============================================================================
@@ -56,10 +57,8 @@ if (IsEmpty(myFDMID) || IsNull(myFDMID)) {
 
 
 // ── (B / C) Split scenario ────────────────────────────────────────────────────
-// FDMID is non-null on INSERT → LRS copied it from the retired parent event.
+// FDMID is non-null on INSERT → LRS copied it from the shortened original record.
 // Find the active sister split record: same FDMID, different OID, TODATE IS NULL.
-// Active records have no TODATE; the retired parent has TODATE set, so this
-// filter correctly excludes the retired original from the sister search.
 
 var eventFC = FeatureSetByName(
     $datastore,

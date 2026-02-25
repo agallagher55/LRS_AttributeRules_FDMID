@@ -42,7 +42,7 @@ Apply the rule in **ArcGIS Pro → Layer Properties → Attribute Rules**, or vi
 | `$feature.ROUTEID` | `ROUTEID` |
 | `$feature.FROMMEASURE` | `FROMMEASURE` |
 | `$feature.TOMEASURE` | `TOMEASURE` |
-| `$feature.TODATE` | `TODATE` — used to distinguish active vs. retired records |
+| `$feature.TODATE` | `TODATE` — used to filter for active (unsplit) records in sister search |
 | `"sdeadm.FDMID_LRS"` | Database sequence supplying unique integers |
 | `"SDEADM.E_AddressRange"` | LRS event feature class |
 | `"LND_civic_address"` | Civic address point feature class |
@@ -63,7 +63,7 @@ A user or process creates a new event with no FDMID.
 
 ### (B) LRS split — keeper segment
 
-When the LRS split tool fires, it retires the original event (sets `TODATE`) and inserts two new active records, each inheriting the parent's FDMID. One record should keep the original FDMID to preserve identity continuity.
+When the LRS split tool fires, it shortens the original record (preserving all its attributes, including FDMID) and inserts a new record with the same attributes. The INSERT rule fires on both resulting records. One record should keep the original FDMID to preserve identity continuity.
 
 **Keeper is determined in priority order:**
 
@@ -108,7 +108,7 @@ If the rule fires for one split record before the other is visible in the curren
 **Split test:**
 1. Note the FDMID of an existing event.
 2. Split it using the LRS Event Editor.
-3. Confirm the two new records have *different* FDMIDs, and the retired original has `TODATE` set.
+3. Confirm the two resulting records have *different* FDMIDs — one retaining the original, one assigned a new value from the sequence.
 
 **Uniqueness check (SQL):**
 ```sql
