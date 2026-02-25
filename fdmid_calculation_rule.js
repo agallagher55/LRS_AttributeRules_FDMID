@@ -51,7 +51,7 @@ var myLength = $feature.TOMEASURE - $feature.FROMMEASURE;
 
 
 // ── (A) Brand-new record ──────────────────────────────────────────────────────
-if (IsEmpty(myFDMID) || IsNull(myFDMID)) {
+if (IsEmpty(myFDMID)) {
     return NextSequenceValue("sdeadm.FDMID_LRS");
 }
 
