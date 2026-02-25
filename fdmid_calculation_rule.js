@@ -16,16 +16,20 @@
 // INSERT scenarios handled
 // ────────────────────────
 //
-//   (A) Brand-new event  (FDMID arrives as NULL)
-//       A user or process creates a new event with no FDMID.
+//   (A) Brand-new event
+//       No retired parent record with the same EventId exists.
+//       New records always arrive with FDMID = NULL, so the split vs.
+//       brand-new distinction is made by querying for a retired parent,
+//       not by inspecting the incoming FDMID value.
 //       → Assign NextSequenceValue("sdeadm.FDMID_LRS")
 //
 //   (B) LRS event split — "keeper" segment
-//       When an event is split, the LRS engine shortens the original record
-//       (preserving all its attributes, including FDMID) and INSERTs a new
-//       record with the same attributes.  The INSERT rule fires on both
-//       resulting records.  One record should keep the original FDMID
-//       (continuity of identity); the other receives a new value.
+//       When an event is split, the LRS engine retires the original record
+//       (sets TODATE) and INSERTs two new active records, both with FDMID = NULL.
+//       The INSERT rule fires on both new records.  One should receive the
+//       retired parent's FDMID (continuity of identity); the other gets a new
+//       value from the sequence.  A retired parent is detected by querying for
+//       a record with the same EventId and TODATE IS NOT NULL.
 //
 //       Keeper determination (in priority order):
 //         1. Primary  – whichever segment's 50 m buffer contains MORE
@@ -36,7 +40,7 @@
 //                       (Both records evaluate this identically, so the
 //                        result is conflict-free regardless of eval order.)
 //
-//       → Return inherited FDMID unchanged.
+//       → Return retired parent's FDMID.
 //
 //   (C) LRS event split — "non-keeper" segment
 //       → Assign NextSequenceValue("sdeadm.FDMID_LRS")
@@ -45,38 +49,45 @@
 
 
 // ── Current feature attributes ────────────────────────────────────────────────
-var myFDMID  = $feature.FDMID;
-var myOID    = $feature.OBJECTID;
-var myLength = $feature.TOMEASURE - $feature.FROMMEASURE;
+var myOID     = $feature.OBJECTID;
+var myLength  = $feature.TOMEASURE - $feature.FROMMEASURE;
+var myEventId = $feature.EventId;
+
+var eventFC = FeatureSetByName(
+    $datastore,
+    "SDEADM.E_AddressRange",
+    ["OBJECTID", "FDMID", "FROMMEASURE", "TOMEASURE", "TODATE", "EventId"],
+    true    // includeGeometry — required for the buffer/intersect comparison below
+);
 
 
 // ── (A) Brand-new record ──────────────────────────────────────────────────────
-if (IsEmpty(myFDMID)) {
+// A retired parent with the same EventId indicates a split.  If none exists,
+// this is a genuinely new event.
+var retiredParents = Filter(eventFC, "EventId = @myEventId AND TODATE IS NOT NULL");
+
+if (Count(retiredParents) == 0) {
     return NextSequenceValue("sdeadm.FDMID_LRS");
 }
 
 
 // ── (B / C) Split scenario ────────────────────────────────────────────────────
-// FDMID is non-null on INSERT → LRS copied it from the shortened original record.
-// Find the active sister split record: same FDMID, different OID, TODATE IS NULL.
+// Retrieve the retired parent's FDMID — this is the value one of the two new
+// records should keep.
+var parentFDMID = First(retiredParents).FDMID;
 
-var eventFC = FeatureSetByName(
-    $datastore,
-    "SDEADM.E_AddressRange",
-    ["OBJECTID", "FDMID", "FROMMEASURE", "TOMEASURE", "TODATE"],
-    true    // includeGeometry — required for the buffer/intersect comparison below
-);
-
+// Find the active sister split record: same EventId, active (TODATE IS NULL),
+// different OBJECTID.
 var sisters = Filter(
     eventFC,
-    "FDMID = @myFDMID AND OBJECTID <> @myOID AND TODATE IS NULL"
+    "EventId = @myEventId AND TODATE IS NULL AND OBJECTID <> @myOID"
 );
 
 // If the sister record is not yet visible in this edit operation, keep the
-// inherited FDMID conservatively.  When the sister's rule fires it will
-// find this record (which has TODATE IS NULL) and evaluate itself correctly.
+// parent FDMID conservatively.  When the sister's rule fires it will
+// find this record and evaluate itself correctly.
 if (Count(sisters) == 0) {
-    return myFDMID;
+    return parentFDMID;
 }
 
 var sister       = First(sisters);
@@ -87,8 +98,7 @@ var sisterLength = sister.TOMEASURE - sister.FROMMEASURE;
 // ── Primary: civic address point density ──────────────────────────────────────
 // Civic address points are not coincident with the LRS event line segments,
 // so a 50 m buffer is applied before intersecting.  The segment whose buffer
-// captures more address points is the keeper — it represents the portion of
-// the original address range with the denser civic data.
+// captures more address points is the keeper.
 
 var BUFFER_M = 50;     // buffer distance in metres
 
@@ -110,15 +120,15 @@ var sisterAddrCount = Count(Intersects(addrFC, sisterBuffer));
 
 // 1. Primary: civic address density
 if (myAddrCount > sisterAddrCount) {
-    return myFDMID;                                 // I have more → I am the keeper
+    return parentFDMID;
 }
 if (sisterAddrCount > myAddrCount) {
-    return NextSequenceValue("sdeadm.FDMID_LRS");  // Sister has more → I get new FDMID
+    return NextSequenceValue("sdeadm.FDMID_LRS");
 }
 
 // 2. Fallback: segment length  (longer segment keeps original FDMID)
 if (myLength > sisterLength) {
-    return myFDMID;
+    return parentFDMID;
 }
 if (sisterLength > myLength) {
     return NextSequenceValue("sdeadm.FDMID_LRS");
@@ -127,6 +137,6 @@ if (sisterLength > myLength) {
 // 3. Tiebreaker: lower OBJECTID keeps original FDMID
 //    Both records evaluate this identically → guaranteed consistent outcome.
 if (myOID <= sisterOID) {
-    return myFDMID;
+    return parentFDMID;
 }
 return NextSequenceValue("sdeadm.FDMID_LRS");

@@ -39,10 +39,10 @@ Apply the rule in **ArcGIS Pro → Layer Properties → Attribute Rules**, or vi
 | Arcade reference | Actual field / object |
 |---|---|
 | `$feature.FDMID` | `FDMID` — the target field |
-| `$feature.ROUTEID` | `ROUTEID` |
+| `$feature.EventId` | `EventId` — shared by the retired parent and both split children; used to detect a split and link to the parent's FDMID |
 | `$feature.FROMMEASURE` | `FROMMEASURE` |
 | `$feature.TOMEASURE` | `TOMEASURE` |
-| `$feature.TODATE` | `TODATE` — used to filter for active (unsplit) records in sister search |
+| `$feature.TODATE` | `TODATE` — non-null on retired records only; used to find the retired parent and exclude it from the sister search |
 | `"sdeadm.FDMID_LRS"` | Database sequence supplying unique integers |
 | `"SDEADM.E_AddressRange"` | LRS event feature class |
 | `"LND_civic_address"` | Civic address point feature class |
@@ -53,9 +53,9 @@ Apply the rule in **ArcGIS Pro → Layer Properties → Attribute Rules**, or vi
 
 The rule handles three INSERT scenarios:
 
-### (A) New event — FDMID is null
+### (A) New event
 
-A user or process creates a new event with no FDMID.
+A user or process creates a new event. No retired parent record with the same `EventId` exists. All new records arrive with `FDMID = NULL` regardless of scenario, so the split vs. brand-new distinction is made by querying for a retired parent, not by inspecting the incoming FDMID value.
 
 ```
 → Assign NextSequenceValue("sdeadm.FDMID_LRS")
@@ -63,7 +63,7 @@ A user or process creates a new event with no FDMID.
 
 ### (B) LRS split — keeper segment
 
-When the LRS split tool fires, it shortens the original record (preserving all its attributes, including FDMID) and inserts a new record with the same attributes. The INSERT rule fires on both resulting records. One record should keep the original FDMID to preserve identity continuity.
+When the LRS split tool fires, the original record is **retired** (`TODATE` is set) and two new active records are inserted, both with `FDMID = NULL`. The INSERT rule fires on both new records. The rule detects the split by finding a retired record with the same `EventId`, then retrieves that parent's FDMID as the value to preserve.
 
 **Keeper is determined in priority order:**
 
@@ -74,7 +74,7 @@ When the LRS split tool fires, it shortens the original record (preserving all i
 | 3 — Tiebreak | `OBJECTID` | Segment with **lower** OBJECTID |
 
 ```
-→ Return inherited FDMID unchanged
+→ Return retired parent's FDMID
 ```
 
 ### (C) LRS split — non-keeper segment
@@ -85,7 +85,7 @@ When the LRS split tool fires, it shortens the original record (preserving all i
 
 ### Edge case: sister record not yet visible
 
-If the rule fires for one split record before the other is visible in the current edit operation, it conservatively keeps the inherited FDMID. When the second record's rule fires it will find the first and evaluate correctly.
+If the rule fires for one split record before the other is visible in the current edit operation, it conservatively returns the parent's FDMID. When the sister's rule fires it will find this record and evaluate correctly.
 
 ---
 
