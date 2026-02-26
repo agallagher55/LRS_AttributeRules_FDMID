@@ -99,7 +99,10 @@ if (sisterCount == 0) {
     var addrFC1    = Filter(addrFC1Raw, "FDMID = @parentFDMID");
 
     var myGeom1     = Geometry($feature);
-    var sisterGeom1 = IsEmpty(parentGeom) ? null : Difference(parentGeom, myGeom1);
+    var sisterGeom1 = null;
+    if (!IsEmpty(parentGeom)) {
+        sisterGeom1 = Difference(parentGeom, myGeom1);
+    }
     var myCount1    = 0;
     var sisterApproxCount1 = 0;
 
