@@ -21,8 +21,11 @@
 //       → No active encompassing parent found; treated as brand-new event.
 //         If you see this after a split, the parent detection is still failing.
 //
-//   "P:1 S:0 FIRST_TO_FIRE pFDMID:… OID:…"
-//       → Parent found; sister not yet visible; first to fire, claiming parentFDMID.
+//   "P:1 S:0 KEEPER_ADDR|NKEEPER_ADDR|KEEPER_LEN|NKEEPER_LEN|KEEPER_FTF …"
+//       → Parent found; sister not yet visible; merit-based step 1 decision.
+//         KEEPER_ADDR / NKEEPER_ADDR — decided by civic address count.
+//         KEEPER_LEN  / NKEEPER_LEN  — decided by segment length.
+//         KEEPER_FTF                 — decided by first-to-fire (tie on all criteria).
 //
 //   "P:1 S:1 SIS_HAS_PARENT pFDMID:… OID:…"
 //       → Sister is visible and already holds parentFDMID; this record is non-keeper.
@@ -69,6 +72,7 @@ var parentFDMID      = null;
 var highestParentOID = -1;
 var parentFromM      = null;
 var parentToM        = null;
+var parentGeom       = null;
 
 for (var p in activeParents) {
     if (p.OBJECTID > highestParentOID) {
@@ -76,9 +80,11 @@ for (var p in activeParents) {
         parentFDMID      = p.FDMID;
         parentFromM      = p.FROMMEASURE;
         parentToM        = p.TOMEASURE;
+        parentGeom       = Geometry(p);
     }
 }
 
+var BUFFER_M = 50;
 
 // ── Find sister ───────────────────────────────────────────────────────────────
 var sisters = Filter(
@@ -90,7 +96,35 @@ var sisters = Filter(
 var sisterCount = Count(sisters);
 
 if (sisterCount == 0) {
-    return "P:" + parentCount + " S:0 FIRST_TO_FIRE pFDMID:" + parentFDMID + " OID:" + myOID;
+    // Mirror step 1 merit-based logic from FDMID rule
+    var addrFC1  = FeatureSetByName($datastore, "LND_civic_address", ["OBJECTID"], true);
+    var myBuf1   = Buffer(Geometry($feature), BUFFER_M, "meters");
+    var myCount1 = Count(Intersects(addrFC1, myBuf1));
+
+    var sisterApproxCount1 = 0;
+    if (!IsEmpty(parentGeom)) {
+        var parentBuf1       = Buffer(parentGeom, BUFFER_M, "meters");
+        var sisterApproxBuf1 = Difference(parentBuf1, myBuf1);
+        sisterApproxCount1   = Count(Intersects(addrFC1, sisterApproxBuf1));
+    }
+
+    var branch1 = "";
+    if (myCount1 > sisterApproxCount1) {
+        branch1 = "KEEPER_ADDR";
+    } else if (sisterApproxCount1 > myCount1) {
+        branch1 = "NKEEPER_ADDR";
+    } else {
+        var sisterLenApprox1 = (parentToM - parentFromM) - myLength;
+        if (myLength > sisterLenApprox1) {
+            branch1 = "KEEPER_LEN";
+        } else if (sisterLenApprox1 > myLength) {
+            branch1 = "NKEEPER_LEN";
+        } else {
+            branch1 = "KEEPER_FTF";
+        }
+    }
+
+    return "P:" + parentCount + " S:0 " + branch1 + " m:" + myCount1 + "/s:" + sisterApproxCount1 + " pFDMID:" + parentFDMID + " OID:" + myOID;
 }
 
 var sister       = First(sisters);
@@ -115,8 +149,8 @@ var addrFC = FeatureSetByName(
     true
 );
 
-var myAddrCount     = Count(Intersects(addrFC, Buffer(Geometry($feature), 50, "meters")));
-var sisterAddrCount = Count(Intersects(addrFC, Buffer(Geometry(sister),   50, "meters")));
+var myAddrCount     = Count(Intersects(addrFC, Buffer(Geometry($feature), BUFFER_M, "meters")));
+var sisterAddrCount = Count(Intersects(addrFC, Buffer(Geometry(sister),   BUFFER_M, "meters")));
 
 var branch = "";
 if (myAddrCount > sisterAddrCount) {
