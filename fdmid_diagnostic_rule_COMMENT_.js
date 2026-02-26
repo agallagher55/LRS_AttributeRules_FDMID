@@ -97,9 +97,10 @@ var sisterCount = Count(sisters);
 
 if (sisterCount == 0) {
     // Mirror step 1 merit-based logic from FDMID rule
-    var addrFC1  = FeatureSetByName($datastore, "LND_civic_address", ["OBJECTID"], true);
-    var myBuf1   = Buffer(Geometry($feature), BUFFER_M, "meters");
-    var myCount1 = Count(Intersects(addrFC1, myBuf1));
+    var addrFC1Raw = FeatureSetByName($datastore, "LND_civic_address", ["FDMID"], true);
+    var addrFC1    = Filter(addrFC1Raw, "FDMID = @parentFDMID");
+    var myBuf1     = Buffer(Geometry($feature), BUFFER_M, "meters");
+    var myCount1   = Count(Intersects(addrFC1, myBuf1));
 
     var sisterApproxCount1 = 0;
     if (!IsEmpty(parentGeom)) {
@@ -142,12 +143,13 @@ if (!IsEmpty(sisterFDMID)) {
 }
 
 // Concurrent fallback — mirror decision tree
-var addrFC = FeatureSetByName(
+var addrFCRaw = FeatureSetByName(
     $datastore,
     "LND_civic_address",
-    ["OBJECTID"],
+    ["FDMID"],
     true
 );
+var addrFC = Filter(addrFCRaw, "FDMID = @parentFDMID");
 
 var myAddrCount     = Count(Intersects(addrFC, Buffer(Geometry($feature), BUFFER_M, "meters")));
 var sisterAddrCount = Count(Intersects(addrFC, Buffer(Geometry(sister),   BUFFER_M, "meters")));

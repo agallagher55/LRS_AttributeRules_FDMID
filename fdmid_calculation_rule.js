@@ -152,9 +152,10 @@ Console("FDMID Rule [OID " + myOID + "]: sisters found: " + sisterCount);
 // driven by data (civic density → segment length → first-to-fire) rather than
 // by the arbitrary order in which the two INSERT rules execute.
 if (sisterCount == 0) {
-    var addrFC1  = FeatureSetByName($datastore, "LND_civic_address", ["OBJECTID"], true);
-    var myBuf1   = Buffer(Geometry($feature), BUFFER_M, "meters");
-    var myCount1 = Count(Intersects(addrFC1, myBuf1));
+    var addrFC1Raw = FeatureSetByName($datastore, "LND_civic_address", ["FDMID"], true);
+    var addrFC1    = Filter(addrFC1Raw, "FDMID = @parentFDMID");
+    var myBuf1     = Buffer(Geometry($feature), BUFFER_M, "meters");
+    var myCount1   = Count(Intersects(addrFC1, myBuf1));
 
     var sisterApproxCount1 = 0;
     if (!IsEmpty(parentGeom)) {
@@ -219,12 +220,13 @@ if (!IsEmpty(sisterFDMID)) {
 // Both rules fired before either received its FDMID.  Use a deterministic
 // decision tree so both reach the same conclusion regardless of eval order.
 
-var addrFC = FeatureSetByName(
+var addrFCRaw = FeatureSetByName(
     $datastore,
     "LND_civic_address",
-    ["OBJECTID"],
+    ["FDMID"],
     true
 );
+var addrFC = Filter(addrFCRaw, "FDMID = @parentFDMID");
 
 var myBuffer     = Buffer(Geometry($feature), BUFFER_M, "meters");
 var sisterBuffer = Buffer(Geometry(sister),    BUFFER_M, "meters");
