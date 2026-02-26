@@ -17,59 +17,59 @@
 // ────────────────────────
 //
 //   (A) Brand-new event
-//       No retired parent record with the same EVENTID exists.
-//       New records always arrive with FDMID = NULL, so the split vs.
-//       brand-new distinction is made by querying for a retired parent,
-//       not by inspecting the incoming FDMID value.
+//       No active encompassing parent record with the same EVENTID exists.
 //       → Assign NextSequenceValue("sdeadm.FDMID_LRS")
 //
-//   (B) LRS event split — "keeper" segment
-//       When an event is split, the LRS engine retires the original record
-//       (sets TODATE) and INSERTs two new active records, both with FDMID = NULL.
-//       The INSERT rule fires on both new records sequentially.  One should
-//       receive the retired parent's FDMID (continuity of identity); the other
-//       gets a new value from the sequence.  A retired parent is detected by
-//       querying for a record with the same EVENTID and TODATE IS NOT NULL.
+//   (B/C) LRS event split — keeper / non-keeper
 //
-//       Because EVENTID persists across repeated splits, multiple retired
-//       parents may share the same EVENTID.  The most recently retired record
-//       (highest OBJECTID) is used.
+//       TIMING NOTE: The LRS engine inserts both child records BEFORE it
+//       retires the original record (sets TODATE).  At the moment the INSERT
+//       rule fires, the parent still has TODATE IS NULL — querying for a
+//       retired parent finds nothing.  Instead, the parent is identified as
+//       the active record with the same EVENTID whose measure range
+//       ENCOMPASSES the current record's range:
 //
-//       Keeper determination logic (applied in order):
+//           parent.FROMMEASURE <= myFROM  AND  parent.TOMEASURE >= myTO
+//
+//       If no such record exists, this is a brand-new event (branch A).
+//
+//       Because EVENTID persists across repeated splits, the encompassing
+//       parent is the one with the highest OBJECTID (most recently created).
+//
+//       The sister — the other child record created by the same split — is
+//       identified precisely to avoid false matches from earlier splits that
+//       share the same EVENTID.  A true sister covers the complementary half
+//       of the parent's range:
+//
+//           (sister.FROM = myTO  AND  sister.TO = parentTO)   ← current is left piece
+//         OR
+//           (sister.FROM = parentFROM  AND  sister.TO = myFROM) ← current is right piece
+//
+//       Keeper determination (applied in order):
 //
 //         Step 1 — Sister not yet visible (sisterCount = 0):
-//                  This record is the first to fire.  Claim parentFDMID.
-//                  When the sister's rule fires, it will find this record
-//                  and proceed via Step 2 or 3.
+//                  This record fires first (sequential execution).
+//                  Claim parentFDMID now.  The sister will observe this
+//                  assignment in Step 2 when its rule fires.
 //
-//         Step 2 — Sister is visible and already has FDMID assigned:
-//                  a. sister.FDMID == parentFDMID  → sister is the keeper;
+//         Step 2 — Sister visible and FDMID already assigned:
+//                  a. sister.FDMID == parentFDMID → sister is keeper;
 //                     this record is non-keeper → NextSequenceValue.
-//                  b. sister.FDMID != parentFDMID  → sister was already
-//                     labelled non-keeper; this record is keeper → parentFDMID.
+//                  b. sister.FDMID != parentFDMID → sister is non-keeper;
+//                     this record is keeper → return parentFDMID.
 //
-//         Step 3 — Sister is visible but FDMID not yet assigned (concurrent
-//                  execution): fall back to the deterministic decision tree:
-//                  1. Primary  – whichever segment's 50 m buffer contains MORE
-//                                LND_civic_address point features keeps the FDMID.
-//                  2. Fallback – if civic-address counts are equal (or both zero),
-//                                the longer segment (TOMEASURE − FROMMEASURE) wins.
-//                  3. Tiebreak – if lengths are also equal, the lower OBJECTID wins.
-//                                (Both records evaluate this identically, so the
-//                                 result is conflict-free regardless of eval order.)
-//
-//       → Return retired parent's FDMID.
-//
-//   (C) LRS event split — "non-keeper" segment
-//       → Assign NextSequenceValue("sdeadm.FDMID_LRS")
+//         Step 3 — Sister visible but FDMID not yet assigned (concurrent):
+//                  Deterministic decision tree (address density → length → OID).
 //
 // =============================================================================
 
 
 // ── Current feature attributes ────────────────────────────────────────────────
-var myOID      = $feature.OBJECTID;
-var myLength   = $feature.TOMEASURE - $feature.FROMMEASURE;
-var myEventId  = $feature.EVENTID;
+var myOID         = $feature.OBJECTID;
+var myFromMeasure = $feature.FROMMEASURE;
+var myToMeasure   = $feature.TOMEASURE;
+var myLength      = myToMeasure - myFromMeasure;
+var myEventId     = $feature.EVENTID;
 
 Console("FDMID Rule start — OID: " + myOID + ", EVENTID: " + myEventId);
 
@@ -77,52 +77,72 @@ var eventFC = FeatureSetByName(
     $datastore,
     "SDEADM.E_AddressRange",
     ["OBJECTID", "FDMID", "FROMMEASURE", "TOMEASURE", "TODATE", "EVENTID"],
-    true    // includeGeometry — required for the buffer/intersect comparison below
+    true    // includeGeometry — required for the buffer/intersect comparison in Step 3
 );
 
 
-// ── (A) Brand-new record ──────────────────────────────────────────────────────
-// A retired parent with the same EVENTID indicates a split.  If none exists,
-// this is a genuinely new event.
-var retiredParents = Filter(eventFC, "EVENTID = @myEventId AND TODATE IS NOT NULL");
-var retiredCount   = Count(retiredParents);
+// ── (A) Brand-new record vs. split child ─────────────────────────────────────
+// The LRS engine inserts children before retiring the parent, so we cannot
+// detect a split by looking for a retired parent (TODATE IS NOT NULL).
+// Instead, look for the not-yet-retired parent: an active record with the
+// same EVENTID whose measure range encompasses this record's range.
+var activeParents = Filter(
+    eventFC,
+    "EVENTID = @myEventId AND TODATE IS NULL AND OBJECTID <> @myOID " +
+    "AND FROMMEASURE <= @myFromMeasure AND TOMEASURE >= @myToMeasure"
+);
+var parentCount = Count(activeParents);
 
-Console("FDMID Rule [OID " + myOID + "]: retired parents found: " + retiredCount);
+Console("FDMID Rule [OID " + myOID + "]: active encompassing parents found: " + parentCount);
 
-if (retiredCount == 0) {
+if (parentCount == 0) {
     Console("FDMID Rule [OID " + myOID + "]: branch A — brand-new event, assigning new sequence value");
     return NextSequenceValue("sdeadm.FDMID_LRS");
 }
 
 
 // ── (B / C) Split scenario ────────────────────────────────────────────────────
-// EVENTID persists across repeated splits, so multiple retired parents may
-// exist.  Iterate to find the most recently retired record (highest OBJECTID).
-var parentFDMID    = null;
+// EVENTID persists across repeated splits, so there could theoretically be
+// more than one encompassing active record in unusual data states.  Use the
+// highest OBJECTID as the most recently created parent.
+var parentFDMID      = null;
 var highestParentOID = -1;
+var parentFromM      = null;
+var parentToM        = null;
 
-for (var p in retiredParents) {
+for (var p in activeParents) {
     if (p.OBJECTID > highestParentOID) {
         highestParentOID = p.OBJECTID;
-        parentFDMID = p.FDMID;
+        parentFDMID      = p.FDMID;
+        parentFromM      = p.FROMMEASURE;
+        parentToM        = p.TOMEASURE;
     }
 }
 
-Console("FDMID Rule [OID " + myOID + "]: using retired parent OID " + highestParentOID + ", parentFDMID: " + parentFDMID);
+Console("FDMID Rule [OID " + myOID + "]: using active parent OID " + highestParentOID + ", parentFDMID: " + parentFDMID);
 
-// Find the active sister split record: same EVENTID, active (TODATE IS NULL),
-// different OBJECTID.
-var sisters     = Filter(eventFC, "EVENTID = @myEventId AND TODATE IS NULL AND OBJECTID <> @myOID");
+// Identify the sister precisely: she covers the complementary half of the
+// parent's range.  This avoids false matches from earlier-split active records
+// that happen to share the same EVENTID.
+//
+//   Current record is left piece  → sister range is [myToMeasure,  parentToM ]
+//   Current record is right piece → sister range is [parentFromM,  myFromMeasure]
+var sisters = Filter(
+    eventFC,
+    "EVENTID = @myEventId AND TODATE IS NULL AND OBJECTID <> @myOID AND " +
+    "((FROMMEASURE = @myToMeasure AND TOMEASURE = @parentToM) OR " +
+    "(FROMMEASURE = @parentFromM AND TOMEASURE = @myFromMeasure))"
+);
 var sisterCount = Count(sisters);
 
 Console("FDMID Rule [OID " + myOID + "]: sisters found: " + sisterCount);
 
 
 // ── Step 1: Sister not yet visible ────────────────────────────────────────────
-// This record is first to fire (sequential execution).  Claim parentFDMID now.
-// When the sister's rule fires it will see this record via Step 2 below.
+// First to fire — claim parentFDMID.  The sister's rule will see this
+// assignment when it fires and take the complementary value (Step 2).
 if (sisterCount == 0) {
-    Console("FDMID Rule [OID " + myOID + "]: sister not visible — first to fire, claiming parentFDMID " + parentFDMID);
+    Console("FDMID Rule [OID " + myOID + "]: first to fire, claiming parentFDMID " + parentFDMID);
     return parentFDMID;
 }
 
@@ -135,33 +155,29 @@ Console("FDMID Rule [OID " + myOID + "]: sister OID: " + sisterOID + ", sister F
 
 
 // ── Step 2: Sister already has FDMID assigned ─────────────────────────────────
-// The first rule has already run and claimed one of the two values.  Determine
-// which value this record should take based on what the sister received.
 if (!IsEmpty(sisterFDMID)) {
     if (sisterFDMID == parentFDMID) {
         // Sister claimed the parent FDMID → this record is the non-keeper.
         Console("FDMID Rule [OID " + myOID + "]: sister holds parentFDMID — assigning new sequence value");
         return NextSequenceValue("sdeadm.FDMID_LRS");
     }
-    // Sister was assigned a new sequence value → sister is the non-keeper,
-    // so this record is the keeper.
+    // Sister holds a new sequence value → sister is the non-keeper; this is the keeper.
     Console("FDMID Rule [OID " + myOID + "]: sister holds new FDMID — returning parentFDMID " + parentFDMID);
     return parentFDMID;
 }
 
 
 // ── Step 3: Sister visible but FDMID not yet set (concurrent execution) ───────
-// Both rules fired before either received its FDMID.  Use the deterministic
-// decision tree so both records reach consistent, non-duplicate conclusions
-// regardless of evaluation order.
+// Both rules fired before either received its FDMID.  Use a deterministic
+// decision tree so both reach the same conclusion regardless of eval order.
 
-var BUFFER_M = 50;     // buffer distance in metres
+var BUFFER_M = 50;
 
 var addrFC = FeatureSetByName(
     $datastore,
     "LND_civic_address",
     ["OBJECTID"],
-    true    // includeGeometry — required for Intersects()
+    true
 );
 
 var myBuffer     = Buffer(Geometry($feature), BUFFER_M, "meters");
@@ -182,7 +198,7 @@ if (sisterAddrCount > myAddrCount) {
     return NextSequenceValue("sdeadm.FDMID_LRS");
 }
 
-// 2. Fallback: segment length  (longer segment keeps original FDMID)
+// 2. Fallback: longer segment keeps original FDMID
 if (myLength > sisterLength) {
     Console("FDMID Rule [OID " + myOID + "]: keeper by length — returning parentFDMID " + parentFDMID);
     return parentFDMID;
@@ -193,7 +209,7 @@ if (sisterLength > myLength) {
 }
 
 // 3. Tiebreaker: lower OBJECTID keeps original FDMID
-//    Both records evaluate this identically → guaranteed consistent outcome.
+//    Both records evaluate this identically → conflict-free regardless of order.
 if (myOID <= sisterOID) {
     Console("FDMID Rule [OID " + myOID + "]: keeper by OID tiebreaker — returning parentFDMID " + parentFDMID);
     return parentFDMID;
