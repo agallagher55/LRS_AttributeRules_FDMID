@@ -49,8 +49,11 @@
 //
 //         Step 1 — Sister not yet visible (sisterCount = 0):
 //                  This record fires first.  The sister's geometry is not yet
-//                  committed, so it is approximated by differencing the parent's
-//                  buffer from the current record's buffer.  The same merit-based
+//                  committed, so it is inferred as Difference(parentGeom,
+//                  Geometry($feature)) — the portion of the parent polyline
+//                  not covered by the current record.  Each civic address point
+//                  is then assigned to whichever segment geometry it is closest
+//                  to (Distance-based, zero overlap).  The same merit-based
 //                  decision tree (address density → length → first-to-fire) is
 //                  applied so the outcome is driven by data, not by timing.
 //
@@ -61,7 +64,10 @@
 //                     this record is keeper → return parentFDMID.
 //
 //         Step 3 — Sister visible but FDMID not yet assigned (concurrent):
-//                  Deterministic decision tree (address density → length → OID).
+//                  Each civic address point is assigned to whichever segment
+//                  geometry it is closest to (Distance-based, zero overlap),
+//                  then the same deterministic decision tree is applied
+//                  (address density → length → OID).
 //
 // =============================================================================
 
@@ -79,7 +85,7 @@ var eventFC = FeatureSetByName(
     $datastore,
     "SDEADM.E_AddressRange",
     ["OBJECTID", "FDMID", "FROMMEASURE", "TOMEASURE", "TODATE", "EVENTID"],
-    true    // includeGeometry — required for the buffer/intersect comparison in Step 3
+    true    // includeGeometry — required for Distance-based address assignment in Steps 1 and 3
 );
 
 
@@ -123,8 +129,6 @@ for (var p in activeParents) {
     }
 }
 
-var BUFFER_M = 50;
-
 Console("FDMID Rule [OID " + myOID + "]: using active parent OID " + highestParentOID + ", parentFDMID: " + parentFDMID);
 
 // Identify the sister precisely: she covers the complementary half of the
@@ -146,22 +150,29 @@ Console("FDMID Rule [OID " + myOID + "]: sisters found: " + sisterCount);
 
 // ── Step 1: Sister not yet visible ────────────────────────────────────────────
 // This record fires first; the sister has not yet been committed, so its
-// geometry is unavailable.  Approximate the sister's civic-address catchment
-// by subtracting the current feature's buffer from the parent's buffer, then
-// apply the same merit-based decision tree used in Step 3.  The outcome is
-// driven by data (civic density → segment length → first-to-fire) rather than
-// by the arbitrary order in which the two INSERT rules execute.
+// geometry is unavailable.  Infer the sister's geometry as the portion of the
+// parent polyline not covered by the current record:
+//   sisterGeom1 = Difference(parentGeom, Geometry($feature))
+// Each civic address point is then assigned to whichever segment it is closest
+// to (Distance-based, no overlap), and the same merit-based decision tree is
+// applied (civic density → segment length → first-to-fire).  The outcome is
+// driven by data, not by the arbitrary order in which the two INSERT rules fire.
 if (sisterCount == 0) {
     var addrFC1Raw = FeatureSetByName($datastore, "LND_civic_address", ["FDMID"], true);
     var addrFC1    = Filter(addrFC1Raw, "FDMID = @parentFDMID");
-    var myBuf1     = Buffer(Geometry($feature), BUFFER_M, "meters");
-    var myCount1   = Count(Intersects(addrFC1, myBuf1));
 
+    var myGeom1      = Geometry($feature);
+    var sisterGeom1  = IsEmpty(parentGeom) ? null : Difference(parentGeom, myGeom1);
+    var myCount1     = 0;
     var sisterApproxCount1 = 0;
-    if (!IsEmpty(parentGeom)) {
-        var parentBuf1       = Buffer(parentGeom, BUFFER_M, "meters");
-        var sisterApproxBuf1 = Difference(parentBuf1, myBuf1);
-        sisterApproxCount1   = Count(Intersects(addrFC1, sisterApproxBuf1));
+
+    for (var a1 in addrFC1) {
+        var pt1 = Geometry(a1);
+        if (IsEmpty(pt1) || IsEmpty(sisterGeom1)) { continue; }
+        var dMe1  = Distance(pt1, myGeom1);
+        var dSis1 = Distance(pt1, sisterGeom1);
+        if      (dMe1 < dSis1) { myCount1++; }
+        else if (dSis1 < dMe1) { sisterApproxCount1++; }
     }
 
     Console("FDMID Rule [OID " + myOID + "]: step1 — myCount: " + myCount1 + ", sisterApproxCount: " + sisterApproxCount1);
@@ -217,8 +228,10 @@ if (!IsEmpty(sisterFDMID)) {
 
 
 // ── Step 3: Sister visible but FDMID not yet set (concurrent execution) ───────
-// Both rules fired before either received its FDMID.  Use a deterministic
-// decision tree so both reach the same conclusion regardless of eval order.
+// Both rules fired before either received its FDMID.  Each civic address point
+// is assigned to whichever segment geometry it is closest to (Distance-based,
+// no overlap at the split boundary).  A deterministic decision tree is applied
+// so both executions reach the same conclusion regardless of eval order.
 
 var addrFCRaw = FeatureSetByName(
     $datastore,
@@ -228,11 +241,19 @@ var addrFCRaw = FeatureSetByName(
 );
 var addrFC = Filter(addrFCRaw, "FDMID = @parentFDMID");
 
-var myBuffer     = Buffer(Geometry($feature), BUFFER_M, "meters");
-var sisterBuffer = Buffer(Geometry(sister),    BUFFER_M, "meters");
+var myGeom3      = Geometry($feature);
+var sisterGeom3  = Geometry(sister);
+var myAddrCount     = 0;
+var sisterAddrCount = 0;
 
-var myAddrCount     = Count(Intersects(addrFC, myBuffer));
-var sisterAddrCount = Count(Intersects(addrFC, sisterBuffer));
+for (var a3 in addrFC) {
+    var pt3  = Geometry(a3);
+    if (IsEmpty(pt3)) { continue; }
+    var dMe3  = Distance(pt3, myGeom3);
+    var dSis3 = Distance(pt3, sisterGeom3);
+    if      (dMe3 < dSis3) { myAddrCount++; }
+    else if (dSis3 < dMe3) { sisterAddrCount++; }
+}
 
 Console("FDMID Rule [OID " + myOID + "]: concurrent fallback — myAddrCount: " + myAddrCount + ", sisterAddrCount: " + sisterAddrCount);
 

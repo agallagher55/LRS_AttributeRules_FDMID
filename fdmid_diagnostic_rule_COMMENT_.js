@@ -84,8 +84,6 @@ for (var p in activeParents) {
     }
 }
 
-var BUFFER_M = 50;
-
 // ── Find sister ───────────────────────────────────────────────────────────────
 var sisters = Filter(
     eventFC,
@@ -99,14 +97,19 @@ if (sisterCount == 0) {
     // Mirror step 1 merit-based logic from FDMID rule
     var addrFC1Raw = FeatureSetByName($datastore, "LND_civic_address", ["FDMID"], true);
     var addrFC1    = Filter(addrFC1Raw, "FDMID = @parentFDMID");
-    var myBuf1     = Buffer(Geometry($feature), BUFFER_M, "meters");
-    var myCount1   = Count(Intersects(addrFC1, myBuf1));
 
+    var myGeom1     = Geometry($feature);
+    var sisterGeom1 = IsEmpty(parentGeom) ? null : Difference(parentGeom, myGeom1);
+    var myCount1    = 0;
     var sisterApproxCount1 = 0;
-    if (!IsEmpty(parentGeom)) {
-        var parentBuf1       = Buffer(parentGeom, BUFFER_M, "meters");
-        var sisterApproxBuf1 = Difference(parentBuf1, myBuf1);
-        sisterApproxCount1   = Count(Intersects(addrFC1, sisterApproxBuf1));
+
+    for (var a1 in addrFC1) {
+        var pt1 = Geometry(a1);
+        if (IsEmpty(pt1) || IsEmpty(sisterGeom1)) { continue; }
+        var dMe1  = Distance(pt1, myGeom1);
+        var dSis1 = Distance(pt1, sisterGeom1);
+        if      (dMe1 < dSis1) { myCount1++; }
+        else if (dSis1 < dMe1) { sisterApproxCount1++; }
     }
 
     var branch1 = "";
@@ -151,8 +154,19 @@ var addrFCRaw = FeatureSetByName(
 );
 var addrFC = Filter(addrFCRaw, "FDMID = @parentFDMID");
 
-var myAddrCount     = Count(Intersects(addrFC, Buffer(Geometry($feature), BUFFER_M, "meters")));
-var sisterAddrCount = Count(Intersects(addrFC, Buffer(Geometry(sister),   BUFFER_M, "meters")));
+var myGeom3      = Geometry($feature);
+var sisterGeom3  = Geometry(sister);
+var myAddrCount     = 0;
+var sisterAddrCount = 0;
+
+for (var a3 in addrFC) {
+    var pt3  = Geometry(a3);
+    if (IsEmpty(pt3)) { continue; }
+    var dMe3  = Distance(pt3, myGeom3);
+    var dSis3 = Distance(pt3, sisterGeom3);
+    if      (dMe3 < dSis3) { myAddrCount++; }
+    else if (dSis3 < dMe3) { sisterAddrCount++; }
+}
 
 var branch = "";
 if (myAddrCount > sisterAddrCount) {
