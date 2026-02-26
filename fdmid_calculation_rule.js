@@ -48,9 +48,11 @@
 //       Keeper determination (applied in order):
 //
 //         Step 1 — Sister not yet visible (sisterCount = 0):
-//                  This record fires first (sequential execution).
-//                  Claim parentFDMID now.  The sister will observe this
-//                  assignment in Step 2 when its rule fires.
+//                  This record fires first.  The sister's geometry is not yet
+//                  committed, so it is approximated by differencing the parent's
+//                  buffer from the current record's buffer.  The same merit-based
+//                  decision tree (address density → length → first-to-fire) is
+//                  applied so the outcome is driven by data, not by timing.
 //
 //         Step 2 — Sister visible and FDMID already assigned:
 //                  a. sister.FDMID == parentFDMID → sister is keeper;
@@ -109,6 +111,7 @@ var parentFDMID      = null;
 var highestParentOID = -1;
 var parentFromM      = null;
 var parentToM        = null;
+var parentGeom       = null;
 
 for (var p in activeParents) {
     if (p.OBJECTID > highestParentOID) {
@@ -116,8 +119,11 @@ for (var p in activeParents) {
         parentFDMID      = p.FDMID;
         parentFromM      = p.FROMMEASURE;
         parentToM        = p.TOMEASURE;
+        parentGeom       = Geometry(p);
     }
 }
+
+var BUFFER_M = 50;
 
 Console("FDMID Rule [OID " + myOID + "]: using active parent OID " + highestParentOID + ", parentFDMID: " + parentFDMID);
 
@@ -139,10 +145,52 @@ Console("FDMID Rule [OID " + myOID + "]: sisters found: " + sisterCount);
 
 
 // ── Step 1: Sister not yet visible ────────────────────────────────────────────
-// First to fire — claim parentFDMID.  The sister's rule will see this
-// assignment when it fires and take the complementary value (Step 2).
+// This record fires first; the sister has not yet been committed, so its
+// geometry is unavailable.  Approximate the sister's civic-address catchment
+// by subtracting the current feature's buffer from the parent's buffer, then
+// apply the same merit-based decision tree used in Step 3.  The outcome is
+// driven by data (civic density → segment length → first-to-fire) rather than
+// by the arbitrary order in which the two INSERT rules execute.
 if (sisterCount == 0) {
-    Console("FDMID Rule [OID " + myOID + "]: first to fire, claiming parentFDMID " + parentFDMID);
+    var addrFC1  = FeatureSetByName($datastore, "LND_civic_address", ["OBJECTID"], true);
+    var myBuf1   = Buffer(Geometry($feature), BUFFER_M, "meters");
+    var myCount1 = Count(Intersects(addrFC1, myBuf1));
+
+    var sisterApproxCount1 = 0;
+    if (!IsEmpty(parentGeom)) {
+        var parentBuf1       = Buffer(parentGeom, BUFFER_M, "meters");
+        var sisterApproxBuf1 = Difference(parentBuf1, myBuf1);
+        sisterApproxCount1   = Count(Intersects(addrFC1, sisterApproxBuf1));
+    }
+
+    Console("FDMID Rule [OID " + myOID + "]: step1 — myCount: " + myCount1 + ", sisterApproxCount: " + sisterApproxCount1);
+
+    // 1. Primary: civic address density
+    if (myCount1 > sisterApproxCount1) {
+        Console("FDMID Rule [OID " + myOID + "]: step1 keeper by address count — returning parentFDMID " + parentFDMID);
+        return parentFDMID;
+    }
+    if (sisterApproxCount1 > myCount1) {
+        Console("FDMID Rule [OID " + myOID + "]: step1 non-keeper by address count — assigning new sequence value");
+        return NextSequenceValue("sdeadm.FDMID_LRS");
+    }
+
+    // 2. Fallback: longer segment keeps original FDMID
+    var sisterLenApprox1 = (parentToM - parentFromM) - myLength;
+    if (myLength > sisterLenApprox1) {
+        Console("FDMID Rule [OID " + myOID + "]: step1 keeper by length — returning parentFDMID " + parentFDMID);
+        return parentFDMID;
+    }
+    if (sisterLenApprox1 > myLength) {
+        Console("FDMID Rule [OID " + myOID + "]: step1 non-keeper by length — assigning new sequence value");
+        return NextSequenceValue("sdeadm.FDMID_LRS");
+    }
+
+    // 3. Tiebreaker: first to fire claims parentFDMID
+    //    (the sister's OID is unknown at this point; as the earlier insert its
+    //    OID is expected to be lower, consistent with the lower-OID-wins rule
+    //    used in Step 3)
+    Console("FDMID Rule [OID " + myOID + "]: step1 keeper by first-to-fire — returning parentFDMID " + parentFDMID);
     return parentFDMID;
 }
 
@@ -170,8 +218,6 @@ if (!IsEmpty(sisterFDMID)) {
 // ── Step 3: Sister visible but FDMID not yet set (concurrent execution) ───────
 // Both rules fired before either received its FDMID.  Use a deterministic
 // decision tree so both reach the same conclusion regardless of eval order.
-
-var BUFFER_M = 50;
 
 var addrFC = FeatureSetByName(
     $datastore,
