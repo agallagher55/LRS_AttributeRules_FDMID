@@ -26,45 +26,42 @@
 //   (B) LRS event split — "keeper" segment
 //       When an event is split, the LRS engine retires the original record
 //       (sets TODATE) and INSERTs two new active records, both with FDMID = NULL.
-//       The INSERT rule fires on both new records.  One should receive the
-//       retired parent's FDMID (continuity of identity); the other gets a new
-//       value from the sequence.  A retired parent is detected by querying for
-//       a record with the same EVENTID and TODATE IS NOT NULL.
+//       The INSERT rule fires on both new records sequentially.  One should
+//       receive the retired parent's FDMID (continuity of identity); the other
+//       gets a new value from the sequence.  A retired parent is detected by
+//       querying for a record with the same EVENTID and TODATE IS NOT NULL.
 //
 //       Because EVENTID persists across repeated splits, multiple retired
 //       parents may share the same EVENTID.  The most recently retired record
 //       (highest OBJECTID) is used.
 //
-//       Keeper determination (in priority order):
-//         1. Primary  – whichever segment's 50 m buffer contains MORE
-//                       LND_civic_address point features keeps the FDMID.
-//         2. Fallback – if civic-address counts are equal (or both zero),
-//                       the longer segment (TOMEASURE − FROMMEASURE) wins.
-//         3. Tiebreak – if lengths are also equal, the lower OBJECTID wins.
-//                       (Both records evaluate this identically, so the
-//                        result is conflict-free regardless of eval order.)
+//       Keeper determination logic (applied in order):
+//
+//         Step 1 — Sister not yet visible (sisterCount = 0):
+//                  This record is the first to fire.  Claim parentFDMID.
+//                  When the sister's rule fires, it will find this record
+//                  and proceed via Step 2 or 3.
+//
+//         Step 2 — Sister is visible and already has FDMID assigned:
+//                  a. sister.FDMID == parentFDMID  → sister is the keeper;
+//                     this record is non-keeper → NextSequenceValue.
+//                  b. sister.FDMID != parentFDMID  → sister was already
+//                     labelled non-keeper; this record is keeper → parentFDMID.
+//
+//         Step 3 — Sister is visible but FDMID not yet assigned (concurrent
+//                  execution): fall back to the deterministic decision tree:
+//                  1. Primary  – whichever segment's 50 m buffer contains MORE
+//                                LND_civic_address point features keeps the FDMID.
+//                  2. Fallback – if civic-address counts are equal (or both zero),
+//                                the longer segment (TOMEASURE − FROMMEASURE) wins.
+//                  3. Tiebreak – if lengths are also equal, the lower OBJECTID wins.
+//                                (Both records evaluate this identically, so the
+//                                 result is conflict-free regardless of eval order.)
 //
 //       → Return retired parent's FDMID.
 //
 //   (C) LRS event split — "non-keeper" segment
 //       → Assign NextSequenceValue("sdeadm.FDMID_LRS")
-//
-// =============================================================================
-//
-// DIAGNOSTIC NOTES (Console output — Q2/Q3)
-// ──────────────────────────────────────────
-// Console() calls throughout this rule log key values to assist with
-// confirming two outstanding questions:
-//
-//   Q2 — Is the sister record visible via FeatureSetByName when the first
-//        rule fires?  Look for "sisters found: 0" in the log — if this
-//        appears, the conservative fallback fired and sequential execution
-//        must be confirmed to avoid duplicate FDMIDs.
-//
-//   Q3 — Are the two INSERT rules guaranteed to fire sequentially?
-//        If sisters count is always > 0, sequential (or session-scoped)
-//        execution is implied.  If sisters count is sometimes 0, the
-//        fallback is being relied upon.
 //
 // =============================================================================
 
@@ -118,31 +115,45 @@ Console("FDMID Rule [OID " + myOID + "]: using retired parent OID " + highestPar
 var sisters     = Filter(eventFC, "EVENTID = @myEventId AND TODATE IS NULL AND OBJECTID <> @myOID");
 var sisterCount = Count(sisters);
 
-// Q2/Q3 diagnostic — key log line
-Console("FDMID Rule [OID " + myOID + "]: sisters found: " + sisterCount + " (Q2/Q3 diagnostic)");
+Console("FDMID Rule [OID " + myOID + "]: sisters found: " + sisterCount);
 
-// If the sister record is not yet visible in this edit operation, return the
-// parent FDMID conservatively.  When the sister's rule fires it will find
-// this record and evaluate itself correctly.
-// NOTE: if both records hit this branch (sisterCount = 0 for both), they will
-// both return parentFDMID and produce a duplicate — see Q2/Q3 in
-// outstanding_questions.md.
+
+// ── Step 1: Sister not yet visible ────────────────────────────────────────────
+// This record is first to fire (sequential execution).  Claim parentFDMID now.
+// When the sister's rule fires it will see this record via Step 2 below.
 if (sisterCount == 0) {
-    Console("FDMID Rule [OID " + myOID + "]: sister not visible — returning parentFDMID conservatively");
+    Console("FDMID Rule [OID " + myOID + "]: sister not visible — first to fire, claiming parentFDMID " + parentFDMID);
     return parentFDMID;
 }
 
 var sister       = First(sisters);
 var sisterOID    = sister.OBJECTID;
+var sisterFDMID  = sister.FDMID;
 var sisterLength = sister.TOMEASURE - sister.FROMMEASURE;
 
-Console("FDMID Rule [OID " + myOID + "]: sister OID: " + sisterOID);
+Console("FDMID Rule [OID " + myOID + "]: sister OID: " + sisterOID + ", sister FDMID: " + sisterFDMID);
 
 
-// ── Primary: civic address point density ──────────────────────────────────────
-// Civic address points are not coincident with the LRS event line segments,
-// so a 50 m buffer is applied before intersecting.  The segment whose buffer
-// captures more address points is the keeper.
+// ── Step 2: Sister already has FDMID assigned ─────────────────────────────────
+// The first rule has already run and claimed one of the two values.  Determine
+// which value this record should take based on what the sister received.
+if (!IsEmpty(sisterFDMID)) {
+    if (sisterFDMID == parentFDMID) {
+        // Sister claimed the parent FDMID → this record is the non-keeper.
+        Console("FDMID Rule [OID " + myOID + "]: sister holds parentFDMID — assigning new sequence value");
+        return NextSequenceValue("sdeadm.FDMID_LRS");
+    }
+    // Sister was assigned a new sequence value → sister is the non-keeper,
+    // so this record is the keeper.
+    Console("FDMID Rule [OID " + myOID + "]: sister holds new FDMID — returning parentFDMID " + parentFDMID);
+    return parentFDMID;
+}
+
+
+// ── Step 3: Sister visible but FDMID not yet set (concurrent execution) ───────
+// Both rules fired before either received its FDMID.  Use the deterministic
+// decision tree so both records reach consistent, non-duplicate conclusions
+// regardless of evaluation order.
 
 var BUFFER_M = 50;     // buffer distance in metres
 
@@ -159,10 +170,7 @@ var sisterBuffer = Buffer(Geometry(sister),    BUFFER_M, "meters");
 var myAddrCount     = Count(Intersects(addrFC, myBuffer));
 var sisterAddrCount = Count(Intersects(addrFC, sisterBuffer));
 
-Console("FDMID Rule [OID " + myOID + "]: myAddrCount: " + myAddrCount + ", sisterAddrCount: " + sisterAddrCount);
-
-
-// ── Decision tree ─────────────────────────────────────────────────────────────
+Console("FDMID Rule [OID " + myOID + "]: concurrent fallback — myAddrCount: " + myAddrCount + ", sisterAddrCount: " + sisterAddrCount);
 
 // 1. Primary: civic address density
 if (myAddrCount > sisterAddrCount) {
