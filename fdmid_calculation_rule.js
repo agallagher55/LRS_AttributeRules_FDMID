@@ -152,7 +152,7 @@ Console("FDMID Rule [OID " + myOID + "]: sisters found: " + sisterCount);
 // driven by data (civic density → segment length → first-to-fire) rather than
 // by the arbitrary order in which the two INSERT rules execute.
 if (sisterCount == 0) {
-    var addrFC1Raw = FeatureSetByName($datastore, "LND_civic_address", ["OBJECTID", "FDMID"], true);
+    var addrFC1Raw = FeatureSetByName($datastore, "LND_civic_address", ["FDMID"], true);
     var addrFC1    = Filter(addrFC1Raw, "FDMID = @parentFDMID");
     var myBuf1     = Buffer(Geometry($feature), BUFFER_M, "meters");
     var myCount1   = Count(Intersects(addrFC1, myBuf1));
@@ -223,7 +223,7 @@ if (!IsEmpty(sisterFDMID)) {
 var addrFCRaw = FeatureSetByName(
     $datastore,
     "LND_civic_address",
-    ["OBJECTID", "FDMID"],
+    ["FDMID"],
     true
 );
 var addrFC = Filter(addrFCRaw, "FDMID = @parentFDMID");
